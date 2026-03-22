@@ -1,8 +1,8 @@
 """
 ✨ The Fae Realm Bot ✨
-A fairy-themed Discord games bot where mortals compete in the Fairy Court.
+A fairy-themed Discord games + counting bot.
 
-Commands:
+Games:
   !grove       - Show all commands (themed help)
   !decree      - Today's daily challenge & streak
   !riddle      - Trivia (Riddles of the Ancient Grove)
@@ -12,6 +12,14 @@ Commands:
   !rings       - Tic-Tac-Toe (Battle of the Rings)
   !oracle      - Magic 8-Ball (The Oracle Speaks)
   !court       - Leaderboard (The Fairy Court Rankings)
+
+Moonrise Counter:
+  !count setup              - Make this channel the counting channel
+  !count shame <role name>  - Set the shame role for ruiners
+  !count leaderboard        - Top counters & worst ruiners
+  !count milestones         - List all milestone numbers
+  !count status             - Show current count & high score
+  !count reset              - Manually reset the count (admin)
 """
 
 import discord
@@ -27,6 +35,7 @@ from collections import defaultdict
 # ── Bot setup ──────────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
@@ -37,6 +46,28 @@ streaks: dict[int, dict[int, dict]] = defaultdict(                           # g
 )
 active_ttt: dict[int, dict] = {}   # channel_id -> game state
 active_pong: dict[int, dict] = {}  # channel_id -> game state
+
+# ── 🌙 Moonrise Counter state ──────────────────────────────────────────────────
+# {guild_id: {"channel_id": int, "count": int, "last_user_id": int|None,
+#             "high_score": int, "shame_role": str|None}}
+count_state: dict[int, dict] = {}
+count_board: dict[int, dict[int, dict]] = defaultdict(
+    lambda: defaultdict(lambda: {"counts": 0, "ruins": 0})
+)
+
+COUNT_MILESTONES = {10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000}
+COUNT_MILESTONE_MSGS = {
+    10:    "🌿 *The grove stirs… ten moonrises have passed!*",
+    25:    "✨ *The sprites are dancing — twenty-five moonrises!*",
+    50:    "🍄 *The mushroom rings glow brighter… fifty moonrises!*",
+    100:   "🌙 *The Fairy Court cheers! One hundred moonrises!*",
+    250:   "🌸 *The moonflowers bloom — two hundred and fifty!*",
+    500:   "👑 *Five hundred moonrises! The elder fae bow in respect.*",
+    1000:  "🌟 **ONE THOUSAND MOONRISES! The Fae Realm trembles with joy!**",
+    2500:  "🔮 **Two thousand five hundred… mortals, you are legendary.**",
+    5000:  "🧚 **FIVE THOUSAND. The Fairy Court has never seen such devotion.**",
+    10000: "✨🌙✨ **TEN THOUSAND MOONRISES. You have transcended mortality.** ✨🌙✨",
+}
 
 
 def add_win(guild_id: int, user_id: int, amount: int = 1):
@@ -606,6 +637,7 @@ async def grove(ctx):
         ("🍄 `!rings`",   "Fight the Battle of the Rings (Tic-Tac-Toe)"),
         ("🔮 `!oracle`",  "Consult the Oracle (Magic 8-Ball)"),
         ("👑 `!court`",   "View the Fairy Court Rankings (Leaderboard)"),
+        ("🌙 `!count`",   "Moonrise Counter — count together, don't mess up"),
     ]
     for name, value in commands_list:
         embed.add_field(name=name, value=value, inline=False)
@@ -618,6 +650,204 @@ async def grove(ctx):
 async def on_ready():
     print(f"✨ The Fae Realm awakens! Logged in as {bot.user} (ID: {bot.user.id})")
     await bot.change_presence(activity=discord.Game("!grove • Enter the Fae Realm"))
+
+
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        await bot.process_commands(message)
+        return
+    # Counting channel handler
+    if message.guild:
+        cs = count_state.get(message.guild.id)
+        if cs and message.channel.id == cs["channel_id"] and not message.content.startswith("!"):
+            await _handle_count(message, cs)
+            return
+    await bot.process_commands(message)
+
+
+async def _handle_count(message: discord.Message, cs: dict):
+    content = message.content.strip()
+    if not content.isdigit():
+        await message.add_reaction("❌")
+        await _count_ruin(message, cs, "non-number")
+        return
+    number = int(content)
+    expected = cs["count"] + 1
+    if number != expected:
+        await message.add_reaction("❌")
+        await _count_ruin(message, cs, "wrong-number")
+        return
+    if message.author.id == cs["last_user_id"]:
+        await message.add_reaction("⚠️")
+        await _count_ruin(message, cs, "double-count")
+        return
+    # Valid count
+    cs["count"] += 1
+    cs["last_user_id"] = message.author.id
+    if cs["count"] > cs["high_score"]:
+        cs["high_score"] = cs["count"]
+    count_board[message.guild.id][message.author.id]["counts"] += 1
+    c = cs["count"]
+    if c in COUNT_MILESTONES:
+        await message.add_reaction("🎉")
+        await message.channel.send(COUNT_MILESTONE_MSGS[c])
+    elif c % 10 == 0:
+        await message.add_reaction("🔥")
+    else:
+        await message.add_reaction("✅")
+
+
+async def _count_ruin(message: discord.Message, cs: dict, reason: str):
+    old = cs["count"]
+    cs["count"] = 0
+    cs["last_user_id"] = None
+    count_board[message.guild.id][message.author.id]["ruins"] += 1
+    shame_role = None
+    if cs.get("shame_role") and message.guild:
+        shame_role = discord.utils.get(message.guild.roles, name=cs["shame_role"])
+        if shame_role:
+            try:
+                for m in message.guild.members:
+                    if shame_role in m.roles and m.id != message.author.id:
+                        await m.remove_roles(shame_role)
+                await message.author.add_roles(shame_role)
+            except discord.Forbidden:
+                pass
+    reason_text = {
+        "non-number":   "dared to speak non-numbers in the sacred grove",
+        "wrong-number": "miscounted the moonrises",
+        "double-count": "tried to count twice — greedy mortal",
+    }.get(reason, "disrupted the count")
+    role_str = shame_role.mention if shame_role else "**Ruiner of the Court**"
+    await message.channel.send(
+        f"💀 {message.author.mention} {reason_text}!\n"
+        f"*The count resets from **{old}** back to zero.*\n"
+        f"{role_str} has been bestowed upon this mortal. 🧚"
+    )
+
+
+# ── 🌙 Moonrise Counter commands ───────────────────────────────────────────────
+@bot.group(name="count", invoke_without_command=True)
+@commands.has_permissions(manage_channels=True)
+async def count_cmd(ctx):
+    embed = discord.Embed(
+        title="🌙 Moonrise Counter",
+        description="A fae-blessed counting channel. Count together. Don't mess up.",
+        color=0x9B59B6,
+    )
+    for name, val in [
+        ("`!count setup`",            "Make this channel the counting channel"),
+        ("`!count shame <role>`",     "Set the shame role for ruiners"),
+        ("`!count leaderboard`",      "Top counters & worst ruiners"),
+        ("`!count milestones`",       "List all milestone numbers"),
+        ("`!count status`",           "Show current count & high score"),
+        ("`!count reset`",            "Manually reset the count"),
+    ]:
+        embed.add_field(name=name, value=val, inline=False)
+    await ctx.send(embed=embed)
+
+
+@count_cmd.command(name="setup")
+@commands.has_permissions(manage_channels=True)
+async def count_setup(ctx):
+    count_state[ctx.guild.id] = {
+        "channel_id": ctx.channel.id, "count": 0,
+        "last_user_id": None, "high_score": 0, "shame_role": None,
+    }
+    embed = discord.Embed(
+        title="🌙 Counting Channel Set",
+        description=(
+            f"**#{ctx.channel.name}** is now the sacred counting grove.\n\n"
+            "Members count up from **1** — one number per message.\n"
+            "The same person cannot count twice in a row.\n"
+            "Wrong number resets the count to **0**."
+        ),
+        color=0x9B59B6,
+    )
+    embed.add_field(name="Next step", value="Set a shame role with `!count shame Ruiner of the Court`", inline=False)
+    await ctx.send(embed=embed)
+
+
+@count_cmd.command(name="shame")
+@commands.has_permissions(manage_channels=True)
+async def count_shame(ctx, *, role_name: str):
+    cs = count_state.get(ctx.guild.id)
+    if not cs:
+        await ctx.send("❌ Run `!count setup` first.")
+        return
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send(f"❌ No role named **{role_name}** found. Create it in Server Settings → Roles first.")
+        return
+    cs["shame_role"] = role_name
+    await ctx.send(f"🎭 Shame role set to {role.mention}. Ruiners beware.")
+
+
+@count_cmd.command(name="status")
+async def count_status(ctx):
+    cs = count_state.get(ctx.guild.id)
+    if not cs:
+        await ctx.send("❌ No counting channel set up. Use `!count setup`.")
+        return
+    channel = ctx.guild.get_channel(cs["channel_id"])
+    next_m = next((m for m in sorted(COUNT_MILESTONES) if m > cs["count"]), None)
+    embed = discord.Embed(title="🌙 Moonrise Status", color=0x9B59B6)
+    embed.add_field(name="Current count", value=f"🌙 **{cs['count']}**", inline=True)
+    embed.add_field(name="High score",    value=f"🏆 **{cs['high_score']}**", inline=True)
+    embed.add_field(name="Channel",       value=channel.mention if channel else "unknown", inline=True)
+    embed.add_field(name="Shame role",    value=cs.get("shame_role") or "not set", inline=True)
+    if next_m:
+        embed.add_field(name="Next milestone", value=f"✨ {next_m} ({next_m - cs['count']} to go)", inline=True)
+    await ctx.send(embed=embed)
+
+
+@count_cmd.command(name="leaderboard")
+async def count_leaderboard(ctx):
+    data = count_board.get(ctx.guild.id, {})
+    if not data:
+        await ctx.send("📭 No counting data yet — start counting!")
+        return
+    medals = ["🥇", "🥈", "🥉"]
+    def fmt(items, key):
+        lines = []
+        for i, (uid, d) in enumerate(sorted(items, key=lambda x: x[1][key], reverse=True)[:5]):
+            if d[key] == 0: continue
+            m = ctx.guild.get_member(uid)
+            lines.append(f"{medals[i] if i < 3 else f'#{i+1}'} {m.display_name if m else 'Unknown'} — **{d[key]}**")
+        return "\n".join(lines) or "None yet"
+    embed = discord.Embed(title="🌙 Moonrise Leaderboard", color=0x9B59B6)
+    embed.add_field(name="🏆 Top Counters",  value=fmt(data.items(), "counts"), inline=False)
+    embed.add_field(name="💀 Worst Ruiners", value=fmt(data.items(), "ruins"),  inline=False)
+    await ctx.send(embed=embed)
+
+
+@count_cmd.command(name="milestones")
+async def count_milestones(ctx):
+    cs = count_state.get(ctx.guild.id)
+    current = cs["count"] if cs else 0
+    lines = [
+        f"{'✅' if current >= m else '⬜'} **{m}** — {COUNT_MILESTONE_MSGS[m][:50]}…"
+        for m in sorted(COUNT_MILESTONES)
+    ]
+    await ctx.send(embed=discord.Embed(
+        title="🌙 Moonrise Milestones",
+        description="\n".join(lines),
+        color=0x9B59B6,
+    ))
+
+
+@count_cmd.command(name="reset")
+@commands.has_permissions(manage_channels=True)
+async def count_reset(ctx):
+    cs = count_state.get(ctx.guild.id)
+    if not cs:
+        await ctx.send("❌ No counting channel set up.")
+        return
+    old = cs["count"]
+    cs["count"] = 0
+    cs["last_user_id"] = None
+    await ctx.send(f"🔄 *The Fairy Court resets the count from **{old}** to zero. Begin again from **1**.*")
 
 
 if __name__ == "__main__":
