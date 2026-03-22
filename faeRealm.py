@@ -536,7 +536,15 @@ async def rings(ctx):
                 board[bot_idx] = TTT_O
 
             winner = ttt_check_winner(board)
-            if winner:
+            if winner == TTT_X:
+                add_win(ctx.guild.id, ctx.author.id)
+                decree_done = complete_decree(ctx.guild.id, ctx.author.id, "rings")
+                result = f"🎉 {fae_flavor(FAE_WIN)} **Your mushroom rings claim the grove!**"
+                if decree_done:
+                    result += "\n📜 **Daily Decree fulfilled! 🔥**"
+                await send_board(result)
+                break
+            if winner == TTT_O:
                 await send_board(f"😈 {fae_flavor(FAE_LOSE)} **The fireflies consume the grove!**")
                 break
 
