@@ -621,13 +621,38 @@ def build_grid(words: list[str]) -> tuple[list[list[str]], dict[str, WordPlaceme
     return grid, placements
 
 
-def render_grid(grid: list[list[str]]) -> str:
-    """Render grid with letter/number coordinates. Rows = A-J, Cols = 1-10."""
-    header = "`  ` " + " ".join(f"`{i+1:2}`" for i in range(GRID_SIZE))
+def get_all_cells(placements: dict[str, WordPlacement]) -> dict[tuple[int,int], set[str]]:
+    """Map every grid cell to the set of words that use it."""
+    cell_words: dict[tuple[int,int], set[str]] = {}
+    for word, (r, c, dr, dc) in placements.items():
+        for i in range(len(word)):
+            key = (r + dr * i, c + dc * i)
+            cell_words.setdefault(key, set()).add(word)
+    return cell_words
+
+
+def render_grid(grid: list[list[str]], placements: dict[str, WordPlacement] = None, found: set[str] = None) -> str:
+    """Render grid. Found-only cells show as [X], shared cells stay as plain letters."""
+    found = found or set()
+    placements = placements or {}
+
+    cell_words = get_all_cells(placements)
+
+    header = "`    ` " + " ".join(f"`{i+1:2}`" for i in range(GRID_SIZE))
     rows = [header]
-    for i, row in enumerate(grid):
-        label = f"`{chr(65+i)} `"
-        rows.append(label + " " + "  ".join(f"`{c}`" for c in row))
+    for r in range(GRID_SIZE):
+        label = f"`{chr(65+r)}   `"
+        cells = []
+        for c in range(GRID_SIZE):
+            letter = grid[r][c]
+            words_here = cell_words.get((r, c), set())
+            if words_here and words_here.issubset(found):
+                # All words using this cell are found — show brackets
+                cells.append(f"`[{letter}]`")
+            else:
+                # Hidden or shared — show plain letter
+                cells.append(f"` {letter} `")
+        rows.append(label + " " + " ".join(cells))
     return "\n".join(rows)
 
 
@@ -718,7 +743,7 @@ async def wordsearch(ctx):
             description=(
                 f"*The Eternal Scroll unfurls… hidden words lie within.*\n"
                 f"*Scan the grid — no hints, only your eyes.*\n\n"
-                f"{render_grid(grid)}\n\n{extra}"
+                f"{render_grid(grid, placements, found)}\n\n{extra}"
             ),
             color=0xF0C040,
         )
