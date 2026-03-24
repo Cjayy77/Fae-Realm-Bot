@@ -560,12 +560,32 @@ WORD_POOL = [
     "HALO", "WING", "ANGEL", "SERAPH", "DIVINE", "GRACE", "LIGHT",
     "ASCEND", "FALLEN", "FEATHER", "HEAVEN", "SACRED", "HOLY", "CHOIR",
     "SIGIL", "AURA", "GLORY", "HERALD", "THRONE", "VIRTUE", "RADIANT",
-    "CELESTIAL", "ETHEREAL", "SANCTUM", "BLESSED", "ETERNAL",
-    # General
+    "CELESTIAL", "ETHEREAL", "SANCTUM", "BLESSED", "ETERNAL", "CHOSEN",
+    "RAPTURE", "EXALTED", "HERALD", "NIMBUS", "CHERUB", "PRAYER",
+    "DEVOTED", "ASCENT", "PURITY", "ANOINTED", "CROWNED", "HALLOWED",
+    "WISDOM", "GOSPEL", "LAMENT", "REBORN", "REFUGE", "ABSOLVED",
+    "HYMN", "FAITH", "VEIL", "OATH", "SOUL", "HAZE", "GLOW", "DAWN",
+    "DUSK", "MIST", "VOID", "RELIC", "CREST", "OMEN", "WRATH",
+    # General / fantasy
     "SWORD", "STORM", "CROWN", "SHADOW", "FLAME", "CRYSTAL", "EMBER",
     "RAVEN", "SILVER", "GOLDEN", "MYSTIC", "ARCANE", "VALOR", "NOBLE",
     "SPIRIT", "DREAM", "PORTAL", "ANCIENT", "POWER", "MORTAL",
+    "BLADE", "FORGE", "CRYPT", "DAGGER", "MANOR", "TOWER", "STAFF",
+    "CLOAK", "ROGUE", "TITAN", "CHAOS", "ORDER", "VENOM", "FROST",
+    "BLAZE", "GLYPH", "CURSE", "BLOOD", "EXILE", "WRAITH", "SHIELD",
+    "ARROW", "SPIRE", "VAULT", "NEXUS", "SHARD", "RIFT", "ECHO",
+    "FORGE", "CLASH", "REIGN", "REALM", "COVEN", "ABYSS", "RUIN",
+    "SIEGE", "RIDGE", "BLIGHT", "THORN", "SHROUD", "STONE", "IRON",
+    "COBRA", "RAVEN", "DRAKE", "WYRM", "INFERNO", "ORACLE", "FABLE",
+    "GHOST", "DEMON", "DIVINE", "LUNAR", "ASTRAL", "COSMIC", "SIREN",
+    "STORM", "KNIGHT", "RANGER", "DRUID", "WIZARD", "PALADIN", "ARCHER",
 ]
+# Deduplicate while preserving order
+WORD_POOL = list(dict.fromkeys(WORD_POOL))
+
+# Track recently used words per guild to avoid repetition
+recent_words: dict[int, list[str]] = defaultdict(list)
+RECENT_MEMORY = 24  # avoid repeating any of the last 24 used words
 
 GRID_SIZE = 10
 DIRECTIONS = [
@@ -717,15 +737,22 @@ async def wordsearch(ctx):
 
     pool = WORD_POOL[:]
     random.shuffle(pool)
-    candidates = sorted([w for w in pool if 4 <= len(w) <= 8], key=len)
-    to_place = candidates[:8]
+    used_recently = set(recent_words[ctx.guild.id])
+    # Prefer words not used recently, fall back to full pool if needed
+    fresh = [w for w in pool if w not in used_recently and 4 <= len(w) <= 8]
+    stale = [w for w in pool if w in used_recently and 4 <= len(w) <= 8]
+    candidates = (fresh + stale)[:8]
 
-    grid, placements = build_grid(to_place)
+    grid, placements = build_grid(candidates)
     placed_words = list(placements.keys())
 
     if not placed_words:
         await ctx.send("❌ *The Scroll could not be inscribed. Try again.*")
         return
+
+    # Record used words for this guild
+    recent_words[ctx.guild.id].extend(placed_words)
+    recent_words[ctx.guild.id] = recent_words[ctx.guild.id][-RECENT_MEMORY:]
 
     found: set[str] = set()
     active_wordsearch[ctx.channel.id] = {
