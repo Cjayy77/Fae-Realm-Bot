@@ -113,6 +113,7 @@ DAILY_CHALLENGES = [
     {"task": "Roll a **natural 20** with `!cast d20`", "cmd": "cast"},
     {"task": "Win a game of **!halo** (Pong)", "cmd": "halo"},
     {"task": "Ask **!divine** three questions", "cmd": "divine"},
+    {"task": "Find all words in **!wordsearch**", "cmd": "wordsearch"},
 ]
 
 def get_today_challenge():
@@ -553,6 +554,175 @@ async def sigil(ctx):
         active_ttt.pop(ctx.channel.id, None)
 
 
+# ── 🔤 Sacred Scroll Search (Word Search) ─────────────────────────────────────
+WORD_POOL = [
+    # Celestial / angel themed
+    "HALO", "WING", "ANGEL", "SERAPH", "DIVINE", "GRACE", "LIGHT",
+    "ASCEND", "FALLEN", "FEATHER", "HEAVEN", "SACRED", "HOLY", "CHOIR",
+    "SIGIL", "AURA", "GLORY", "HERALD", "THRONE", "VIRTUE", "RADIANT",
+    "CELESTIAL", "ETHEREAL", "SANCTUM", "BLESSED", "ETERNAL",
+    # General
+    "SWORD", "STORM", "CROWN", "SHADOW", "FLAME", "CRYSTAL", "EMBER",
+    "RAVEN", "SILVER", "GOLDEN", "MYSTIC", "ARCANE", "VALOR", "NOBLE",
+    "SPIRIT", "DREAM", "PORTAL", "ANCIENT", "POWER", "MORTAL",
+]
+
+GRID_SIZE = 10
+DIRECTIONS = [
+    (0, 1), (1, 0), (1, 1), (1, -1),   # right, down, diag-right, diag-left
+    (0, -1), (-1, 0), (-1, -1), (-1, 1) # left, up, reverse diags
+]
+
+active_wordsearch: dict[int, dict] = {}  # channel_id -> game state
+
+
+def build_grid(words: list[str]) -> tuple[list[list[str]], list[str]]:
+    """Place words in a grid, return grid and list of successfully placed words."""
+    grid = [["·"] * GRID_SIZE for _ in range(GRID_SIZE)]
+    placed = []
+
+    for word in words:
+        dirs = DIRECTIONS[:]
+        random.shuffle(dirs)
+        positions = [(r, c) for r in range(GRID_SIZE) for c in range(GRID_SIZE)]
+        random.shuffle(positions)
+        success = False
+        for dr, dc in dirs:
+            for r, c in positions:
+                end_r = r + dr * (len(word) - 1)
+                end_c = c + dc * (len(word) - 1)
+                if not (0 <= end_r < GRID_SIZE and 0 <= end_c < GRID_SIZE):
+                    continue
+                # Check if placement is valid
+                valid = True
+                for i, letter in enumerate(word):
+                    gr, gc = r + dr * i, c + dc * i
+                    if grid[gr][gc] not in ("·", letter):
+                        valid = False
+                        break
+                if valid:
+                    for i, letter in enumerate(word):
+                        gr, gc = r + dr * i, c + dc * i
+                        grid[gr][gc] = letter
+                    placed.append(word)
+                    success = True
+                    break
+            if success:
+                break
+
+    # Fill empty cells with random letters
+    for r in range(GRID_SIZE):
+        for c in range(GRID_SIZE):
+            if grid[r][c] == "·":
+                grid[r][c] = random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+    return grid, placed
+
+
+def render_grid(grid: list[list[str]], found: set[str] = None) -> str:
+    header = "` `  " + "  ".join(f"`{i+1}`" for i in range(GRID_SIZE))
+    rows = [header]
+    for i, row in enumerate(grid):
+        label = f"`{chr(65+i)}`"
+        rows.append(f"{label}  " + "  ".join(f"`{c}`" for c in row))
+    return "\n".join(rows)
+
+
+@bot.command(name="wordsearch", aliases=["ws"], help="Play Sacred Scroll Search (Word Search)! Usage: !wordsearch")
+async def wordsearch(ctx):
+    if ctx.channel.id in active_wordsearch:
+        await ctx.send("📜 *A sacred scroll is already open in this channel!*")
+        return
+
+    # Pick 5-6 words that fit the grid
+    pool = WORD_POOL[:]
+    random.shuffle(pool)
+    # Prefer shorter words for density, allow up to 9 letters
+    candidates = sorted([w for w in pool if 4 <= len(w) <= 8], key=len)
+    to_place = candidates[:8]
+
+    grid, placed_words = build_grid(to_place)
+
+    if not placed_words:
+        await ctx.send("❌ *The Scroll could not be inscribed. Try again.*")
+        return
+
+    found: set[str] = set()
+    active_wordsearch[ctx.channel.id] = {
+        "grid": grid,
+        "words": placed_words,
+        "found": found,
+        "finder": ctx.author.id,
+    }
+
+    def make_embed(extra: str = "") -> discord.Embed:
+        remaining = [w for w in placed_words if w not in found]
+        found_list = " ".join(f"~~{w}~~" for w in placed_words if w in found) or "none yet"
+        remaining_list = " • ".join(remaining)
+        embed = discord.Embed(
+            title="📜 Sacred Scroll Search",
+            description=(
+                f"*The Eternal Scroll unfurls… hidden words lie within.*\n\n"
+                f"{render_grid(grid)}\n\n{extra}"
+            ),
+            color=0xF0C040,
+        )
+        embed.add_field(name="Find these words", value=remaining_list or "All found! 🎉", inline=False)
+        embed.add_field(name="Found so far",     value=found_list, inline=False)
+        embed.set_footer(text="Type a word to find it • !wsgive up to surrender")
+        return embed
+
+    await ctx.send(embed=make_embed("*Search the grid and type words you find!*"))
+
+    def check(m):
+        return (
+            m.channel == ctx.channel
+            and not m.author.bot
+            and (
+                m.content.upper() in [w for w in placed_words if w not in found]
+                or m.content.lower() in ("!wsgive up", "!ws give up", "give up")
+            )
+        )
+
+    try:
+        while len(found) < len(placed_words):
+            try:
+                msg = await bot.wait_for("message", timeout=300.0, check=check)
+            except asyncio.TimeoutError:
+                await ctx.send(
+                    f"⏰ *The Scroll seals itself after 5 minutes of silence.*\n"
+                    f"Words remaining: **{', '.join(w for w in placed_words if w not in found)}**"
+                )
+                break
+
+            if msg.content.lower() in ("!wsgive up", "!ws give up", "give up"):
+                remaining = [w for w in placed_words if w not in found]
+                await ctx.send(
+                    f"🌑 *{msg.author.mention} surrenders to the darkness.*\n"
+                    f"The hidden words were: **{', '.join(remaining)}**"
+                )
+                break
+
+            word = msg.content.upper()
+            found.add(word)
+            add_win(ctx.guild.id, msg.author.id)
+            edict_done = complete_edict(ctx.guild.id, msg.author.id, "wordsearch")
+
+            if len(found) == len(placed_words):
+                extra = f"✅ {msg.author.mention} found **{word}**!\n\n🎉 {flavor(ANGEL_WIN)} **All words found! The Scroll is complete!**"
+                if edict_done:
+                    extra += "\n📜 **Daily Edict fulfilled! 🔥**"
+                await ctx.send(embed=make_embed(extra))
+            else:
+                extra = f"✅ {msg.author.mention} found **{word}**! {len(placed_words) - len(found)} word(s) remaining."
+                if edict_done:
+                    extra += "\n📜 **Daily Edict fulfilled! 🔥**"
+                await ctx.send(embed=make_embed(extra))
+
+    finally:
+        active_wordsearch.pop(ctx.channel.id, None)
+
+
 # ── 🏆 The Ascendancy Rankings (Leaderboard) ──────────────────────────────────
 @bot.command(name="ascendancy", help="View the Ascendancy Rankings (leaderboard).")
 async def ascendancy(ctx):
@@ -593,15 +763,16 @@ async def sanctum(ctx):
         color=0xF0C040,
     )
     commands_list = [
-        ("📜 `!edict`",       "See today's Daily Edict & your streak"),
-        ("📜 `!prophecy`",    "Answer a Prophecy of the Eternal Scroll (Trivia)"),
-        ("⚔️ `!trial`",      "Enter the Trial of Dominion (Rock Paper Scissors)"),
-        ("🎲 `!cast`",        "Cast the Dice of Fate (Dice Roll)"),
-        ("😇 `!halo`",        "Enter the Halo Deflection Duel (Pong)"),
-        ("✝️ `!sigil`",      "Fight the Battle of Sigils (Tic-Tac-Toe)"),
-        ("✨ `!divine`",      "Seek Divine Guidance (Magic 8-Ball)"),
-        ("👑 `!ascendancy`",  "View the Ascendancy Rankings (Leaderboard)"),
-        ("🪶 `!feathers`",    "Feather Counter — count together, don't falter"),
+        ("📜 `!edict`",        "See today's Daily Edict & your streak"),
+        ("📜 `!prophecy`",     "Answer a Prophecy of the Eternal Scroll (Trivia)"),
+        ("⚔️ `!trial`",       "Enter the Trial of Dominion (Rock Paper Scissors)"),
+        ("🎲 `!cast`",         "Cast the Dice of Fate (Dice Roll)"),
+        ("😇 `!halo`",         "Enter the Halo Deflection Duel (Pong)"),
+        ("✝️ `!sigil`",       "Fight the Battle of Sigils (Tic-Tac-Toe)"),
+        ("✨ `!divine`",       "Seek Divine Guidance (Magic 8-Ball)"),
+        ("📜 `!wordsearch`",   "Sacred Scroll Search (Word Search) — also `!ws`"),
+        ("👑 `!ascendancy`",   "View the Ascendancy Rankings (Leaderboard)"),
+        ("🪶 `!feathers`",     "Feather Counter — count together, don't falter"),
     ]
     for name, value in commands_list:
         embed.add_field(name=name, value=value, inline=False)
