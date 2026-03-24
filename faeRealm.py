@@ -575,11 +575,14 @@ DIRECTIONS = [
 
 active_wordsearch: dict[int, dict] = {}  # channel_id -> game state
 
+# Store word placements: {word: (start_r, start_c, dr, dc)}
+WordPlacement = tuple[int, int, int, int]
 
-def build_grid(words: list[str]) -> tuple[list[list[str]], list[str]]:
-    """Place words in a grid, return grid and list of successfully placed words."""
+
+def build_grid(words: list[str]) -> tuple[list[list[str]], dict[str, WordPlacement]]:
+    """Place words in a grid. Returns grid and placement map."""
     grid = [["·"] * GRID_SIZE for _ in range(GRID_SIZE)]
-    placed = []
+    placements: dict[str, WordPlacement] = {}
 
     for word in words:
         dirs = DIRECTIONS[:]
@@ -593,7 +596,6 @@ def build_grid(words: list[str]) -> tuple[list[list[str]], list[str]]:
                 end_c = c + dc * (len(word) - 1)
                 if not (0 <= end_r < GRID_SIZE and 0 <= end_c < GRID_SIZE):
                     continue
-                # Check if placement is valid
                 valid = True
                 for i, letter in enumerate(word):
                     gr, gc = r + dr * i, c + dc * i
@@ -604,44 +606,97 @@ def build_grid(words: list[str]) -> tuple[list[list[str]], list[str]]:
                     for i, letter in enumerate(word):
                         gr, gc = r + dr * i, c + dc * i
                         grid[gr][gc] = letter
-                    placed.append(word)
+                    placements[word] = (r, c, dr, dc)
                     success = True
                     break
             if success:
                 break
 
-    # Fill empty cells with random letters
+    # Fill empty cells
     for r in range(GRID_SIZE):
         for c in range(GRID_SIZE):
             if grid[r][c] == "·":
                 grid[r][c] = random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
-    return grid, placed
+    return grid, placements
 
 
-def render_grid(grid: list[list[str]], found: set[str] = None) -> str:
-    header = "` `  " + "  ".join(f"`{i+1}`" for i in range(GRID_SIZE))
+def render_grid(grid: list[list[str]]) -> str:
+    """Render grid with letter/number coordinates. Rows = A-J, Cols = 1-10."""
+    header = "`  ` " + " ".join(f"`{i+1:2}`" for i in range(GRID_SIZE))
     rows = [header]
     for i, row in enumerate(grid):
-        label = f"`{chr(65+i)}`"
-        rows.append(f"{label}  " + "  ".join(f"`{c}`" for c in row))
+        label = f"`{chr(65+i)} `"
+        rows.append(label + " " + "  ".join(f"`{c}`" for c in row))
     return "\n".join(rows)
 
 
-@bot.command(name="wordsearch", aliases=["ws"], help="Play Sacred Scroll Search (Word Search)! Usage: !wordsearch")
+def coords_to_word(grid: list[list[str]], text: str, placements: dict[str, WordPlacement]) -> str | None:
+    """
+    Parse coordinate input like 'A3 A7' or 'A3-A7' and extract the word from the grid.
+    Returns the matched placed word or None.
+    """
+    text = text.upper().replace("-", " ").replace("TO", " ")
+    parts = text.split()
+    if len(parts) != 2:
+        return None
+
+    def parse_coord(s):
+        if len(s) < 2:
+            return None
+        row_char = s[0]
+        col_str  = s[1:]
+        if not row_char.isalpha() or not col_str.isdigit():
+            return None
+        r = ord(row_char) - ord('A')
+        c = int(col_str) - 1
+        if 0 <= r < GRID_SIZE and 0 <= c < GRID_SIZE:
+            return r, c
+        return None
+
+    start = parse_coord(parts[0])
+    end   = parse_coord(parts[1])
+    if not start or not end:
+        return None
+
+    sr, sc = start
+    er, ec = end
+    dr = 0 if er == sr else (1 if er > sr else -1)
+    dc = 0 if ec == sc else (1 if ec > sc else -1)
+
+    # Read letters along the line
+    letters = []
+    r, c = sr, sc
+    while 0 <= r < GRID_SIZE and 0 <= c < GRID_SIZE:
+        letters.append(grid[r][c])
+        if (r, c) == (er, ec):
+            break
+        r += dr
+        c += dc
+    else:
+        return None
+
+    word = "".join(letters)
+    # Check forward and backward
+    for candidate in (word, word[::-1]):
+        if candidate in placements:
+            return candidate
+    return None
+
+
+@bot.command(name="wordsearch", aliases=["ws"], help="Play Sacred Scroll Search! Usage: !wordsearch")
 async def wordsearch(ctx):
     if ctx.channel.id in active_wordsearch:
         await ctx.send("📜 *A sacred scroll is already open in this channel!*")
         return
 
-    # Pick 5-6 words that fit the grid
     pool = WORD_POOL[:]
     random.shuffle(pool)
-    # Prefer shorter words for density, allow up to 9 letters
     candidates = sorted([w for w in pool if 4 <= len(w) <= 8], key=len)
     to_place = candidates[:8]
 
-    grid, placed_words = build_grid(to_place)
+    grid, placements = build_grid(to_place)
+    placed_words = list(placements.keys())
 
     if not placed_words:
         await ctx.send("❌ *The Scroll could not be inscribed. Try again.*")
@@ -650,71 +705,96 @@ async def wordsearch(ctx):
     found: set[str] = set()
     active_wordsearch[ctx.channel.id] = {
         "grid": grid,
+        "placements": placements,
         "words": placed_words,
         "found": found,
-        "finder": ctx.author.id,
     }
 
     def make_embed(extra: str = "") -> discord.Embed:
-        remaining = [w for w in placed_words if w not in found]
-        found_list = " ".join(f"~~{w}~~" for w in placed_words if w in found) or "none yet"
-        remaining_list = " • ".join(remaining)
+        found_list  = " • ".join(f"~~{w}~~" for w in placed_words if w in found) or "none yet"
+        remaining_count = len(placed_words) - len(found)
         embed = discord.Embed(
             title="📜 Sacred Scroll Search",
             description=(
-                f"*The Eternal Scroll unfurls… hidden words lie within.*\n\n"
+                f"*The Eternal Scroll unfurls… hidden words lie within.*\n"
+                f"*Scan the grid — no hints, only your eyes.*\n\n"
                 f"{render_grid(grid)}\n\n{extra}"
             ),
             color=0xF0C040,
         )
-        embed.add_field(name="Find these words", value=remaining_list or "All found! 🎉", inline=False)
-        embed.add_field(name="Found so far",     value=found_list, inline=False)
-        embed.set_footer(text="Type a word to find it • !wsgive up to surrender")
+        embed.add_field(
+            name="Words remaining",
+            value=f"**{remaining_count}** hidden word{'s' if remaining_count != 1 else ''} still in the scroll",
+            inline=True,
+        )
+        embed.add_field(name="Found so far", value=found_list, inline=True)
+        embed.set_footer(
+            text="Type the word • or coordinates e.g. A3 A7 • type 'give up' to reveal all"
+        )
         return embed
 
-    await ctx.send(embed=make_embed("*Search the grid and type words you find!*"))
+    await ctx.send(embed=make_embed("*Search the grid and name what you find!*"))
 
     def check(m):
-        return (
-            m.channel == ctx.channel
-            and not m.author.bot
-            and (
-                m.content.upper() in [w for w in placed_words if w not in found]
-                or m.content.lower() in ("!wsgive up", "!ws give up", "give up")
-            )
-        )
+        if m.channel != ctx.channel or m.author.bot:
+            return False
+        content = m.content.strip()
+        if content.lower() in ("give up", "!ws give up"):
+            return True
+        # Word match
+        if content.upper() in [w for w in placed_words if w not in found]:
+            return True
+        # Coordinate match
+        if coords_to_word(grid, content, placements):
+            return True
+        return False
 
     try:
         while len(found) < len(placed_words):
             try:
                 msg = await bot.wait_for("message", timeout=300.0, check=check)
             except asyncio.TimeoutError:
-                await ctx.send(
-                    f"⏰ *The Scroll seals itself after 5 minutes of silence.*\n"
-                    f"Words remaining: **{', '.join(w for w in placed_words if w not in found)}**"
-                )
-                break
-
-            if msg.content.lower() in ("!wsgive up", "!ws give up", "give up"):
                 remaining = [w for w in placed_words if w not in found]
                 await ctx.send(
-                    f"🌑 *{msg.author.mention} surrenders to the darkness.*\n"
+                    f"⏰ *The Scroll seals itself after 5 minutes of silence.*\n"
                     f"The hidden words were: **{', '.join(remaining)}**"
                 )
                 break
 
-            word = msg.content.upper()
+            content = msg.content.strip()
+
+            # Give up
+            if content.lower() in ("give up", "!ws give up"):
+                remaining = [w for w in placed_words if w not in found]
+                await ctx.send(
+                    f"🌑 *{msg.author.mention} surrenders to the darkness.*\n"
+                    f"The remaining words were: **{', '.join(remaining)}**"
+                )
+                break
+
+            # Resolve word — either typed directly or via coordinates
+            word = content.upper() if content.upper() in placed_words else coords_to_word(grid, content, placements)
+            if not word or word in found:
+                continue
+
             found.add(word)
             add_win(ctx.guild.id, msg.author.id)
             edict_done = complete_edict(ctx.guild.id, msg.author.id, "wordsearch")
 
             if len(found) == len(placed_words):
-                extra = f"✅ {msg.author.mention} found **{word}**!\n\n🎉 {flavor(ANGEL_WIN)} **All words found! The Scroll is complete!**"
+                extra = (
+                    f"✅ {msg.author.mention} found **{word}**!\n\n"
+                    f"🎉 {flavor(ANGEL_WIN)} **All words found! The Scroll is complete!**"
+                )
                 if edict_done:
                     extra += "\n📜 **Daily Edict fulfilled! 🔥**"
                 await ctx.send(embed=make_embed(extra))
             else:
-                extra = f"✅ {msg.author.mention} found **{word}**! {len(placed_words) - len(found)} word(s) remaining."
+                remaining_count = len(placed_words) - len(found)
+                extra = (
+                    f"✅ {msg.author.mention} found **{word}**! "
+                    f"**{remaining_count}** word{'s' if remaining_count != 1 else ''} still hidden."
+                )
                 if edict_done:
                     extra += "\n📜 **Daily Edict fulfilled! 🔥**"
                 await ctx.send(embed=make_embed(extra))
