@@ -1110,12 +1110,11 @@ async def on_message(message: discord.Message):
         return
     if message.guild:
         cs = count_state.get(message.guild.id)
-        if cs and message.channel.id == cs["channel_id"] and not message.content.startswith("!"):
-            try:
+        if cs and message.channel.id == cs["channel_id"]:
+            if not message.content.startswith("!"):
                 await _handle_count(message, cs)
-            except Exception as e:
-                print(f"[on_message] counting error in guild {message.guild.id}: {e}")
-                log_feathers(message.guild.id, f"❌ Unhandled error: `{e}`")
+            else:
+                await bot.process_commands(message)
             return
     await bot.process_commands(message)
 
@@ -1123,48 +1122,50 @@ async def on_message(message: discord.Message):
 async def _handle_count(message: discord.Message, cs: dict):
     content = message.content.strip()
 
-    # Normalize unicode digits (e.g. １２３ → 123)
-    content = content.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
-
-    if not content.isdigit():
-        try:
-            await message.add_reaction("❌")
-        except Exception:
-            pass
-        await _count_ruin(message, cs, "non-number")
+    # Ignore anything that isn't a plain positive integer — no ruin, no reaction
+    if not content.isdigit() or content.startswith("0"):
         return
+
     number = int(content)
-    if number != cs["count"] + 1:
+    expected = cs["count"] + 1
+
+    # Wrong number
+    if number != expected:
         try:
             await message.add_reaction("❌")
         except Exception:
             pass
         await _count_ruin(message, cs, "wrong-number")
         return
+
+    # Same person counted twice
     if message.author.id == cs["last_user_id"]:
         try:
-            await message.add_reaction("⚠️")
+            await message.add_reaction("❌")
         except Exception:
             pass
         await _count_ruin(message, cs, "double-count")
         return
+
+    # Valid count
     cs["count"] += 1
     cs["last_user_id"] = message.author.id
     if cs["count"] > cs["high_score"]:
         cs["high_score"] = cs["count"]
     count_board[message.guild.id][message.author.id]["counts"] += 1
-    log_feathers(message.guild.id, f"✅ {message.author.display_name} counted → **{cs['count']}**")
+    log_feathers(message.guild.id, f"✅ {message.author.display_name} → **{cs['count']}**")
+
     c = cs["count"]
+
+    # Save every 10 counts
     if c % 10 == 0:
         save_count_state()
         _save_count_board()
+
+    # React
     if c in COUNT_MILESTONES:
         try:
             await message.add_reaction("🎉")
-        except Exception:
-            await message.channel.send(COUNT_MILESTONE_MSGS[c])
-            return
-        try:
             await message.channel.send(COUNT_MILESTONE_MSGS[c])
         except Exception:
             pass
@@ -1172,12 +1173,12 @@ async def _handle_count(message: discord.Message, cs: dict):
         try:
             await message.add_reaction("🔥")
         except Exception:
-            await message.channel.send(f"🔥 **{c}!** Keep going!")
+            pass
     else:
         try:
             await message.add_reaction("🪶")
         except Exception:
-            pass  # silent for normal counts — no spam
+            pass
 
 
 async def _count_ruin(message: discord.Message, cs: dict, reason: str):
@@ -1188,36 +1189,35 @@ async def _count_ruin(message: discord.Message, cs: dict, reason: str):
     log_feathers(message.guild.id, f"💀 {message.author.display_name} ruined at **{old}** ({reason})")
     save_count_state()
     _save_count_board()
-    shame_role = None
+
+    # Shame role
     if cs.get("shame_role") and message.guild:
-        shame_role = discord.utils.get(message.guild.roles, name=cs["shame_role"])
-        if shame_role:
+        role = discord.utils.get(message.guild.roles, name=cs["shame_role"])
+        if role:
             try:
                 for m in message.guild.members:
-                    if shame_role in m.roles and m.id != message.author.id:
-                        await m.remove_roles(shame_role)
-                await message.author.add_roles(shame_role)
-            except discord.Forbidden:
-                err = "missing Manage Roles permission"
-                print(f"[_count_ruin] {err} in guild {message.guild.id}")
-                log_feathers(message.guild.id, f"⚠️ Shame role error: `{err}`")
+                    if role in m.roles and m.id != message.author.id:
+                        await m.remove_roles(role)
+                await message.author.add_roles(role)
             except Exception as e:
-                print(f"[_count_ruin] shame role error: {e}")
                 log_feathers(message.guild.id, f"⚠️ Shame role error: `{e}`")
+
     reason_text = {
-        "non-number":   "spoke impure words in the sacred count",
         "wrong-number": "miscounted the fallen feathers",
-        "double-count": "tried to count twice — greedy soul",
+        "double-count":  "tried to count twice — greedy soul",
     }.get(reason, "disrupted the sacred count")
-    role_str = shame_role.mention if shame_role else "**The Fallen**"
+
+    shame_role_obj = discord.utils.get(message.guild.roles, name=cs.get("shame_role", "")) if cs.get("shame_role") else None
+    role_str = shame_role_obj.mention if shame_role_obj else "**The Fallen**"
+
     try:
         await message.channel.send(
             f"💀 {message.author.mention} {reason_text}!\n"
             f"*The count resets from **{old}** back to zero.*\n"
             f"{role_str} has been bestowed upon this soul. 😈"
         )
-    except Exception as e:
-        print(f"[_count_ruin] failed to send ruin message: {e}")
+    except Exception:
+        pass
 
 
 # ── 🪶 Feather Counter commands ────────────────────────────────────────────────
