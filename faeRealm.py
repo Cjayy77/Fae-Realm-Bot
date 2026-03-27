@@ -1116,10 +1116,6 @@ async def on_message(message: discord.Message):
             except Exception as e:
                 print(f"[on_message] counting error in guild {message.guild.id}: {e}")
                 log_feathers(message.guild.id, f"❌ Unhandled error: `{e}`")
-                try:
-                    await message.add_reaction("⚠️")
-                except Exception:
-                    pass
             return
     await bot.process_commands(message)
 
@@ -1131,16 +1127,25 @@ async def _handle_count(message: discord.Message, cs: dict):
     content = content.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
 
     if not content.isdigit():
-        await message.add_reaction("❌")
+        try:
+            await message.add_reaction("❌")
+        except Exception:
+            pass
         await _count_ruin(message, cs, "non-number")
         return
     number = int(content)
     if number != cs["count"] + 1:
-        await message.add_reaction("❌")
+        try:
+            await message.add_reaction("❌")
+        except Exception:
+            pass
         await _count_ruin(message, cs, "wrong-number")
         return
     if message.author.id == cs["last_user_id"]:
-        await message.add_reaction("⚠️")
+        try:
+            await message.add_reaction("⚠️")
+        except Exception:
+            pass
         await _count_ruin(message, cs, "double-count")
         return
     cs["count"] += 1
@@ -1154,12 +1159,24 @@ async def _handle_count(message: discord.Message, cs: dict):
         save_count_state()
         _save_count_board()
     if c in COUNT_MILESTONES:
-        await message.add_reaction("🎉")
-        await message.channel.send(COUNT_MILESTONE_MSGS[c])
+        try:
+            await message.add_reaction("🎉")
+        except Exception:
+            pass
+        try:
+            await message.channel.send(COUNT_MILESTONE_MSGS[c])
+        except Exception:
+            pass
     elif c % 10 == 0:
-        await message.add_reaction("🔥")
+        try:
+            await message.add_reaction("🔥")
+        except Exception:
+            pass
     else:
-        await message.add_reaction("🪶")
+        try:
+            await message.add_reaction("🪶")
+        except Exception:
+            pass
 
 
 async def _count_ruin(message: discord.Message, cs: dict, reason: str):
