@@ -1162,7 +1162,8 @@ async def _handle_count(message: discord.Message, cs: dict):
         try:
             await message.add_reaction("🎉")
         except Exception:
-            pass
+            await message.channel.send(COUNT_MILESTONE_MSGS[c])
+            return
         try:
             await message.channel.send(COUNT_MILESTONE_MSGS[c])
         except Exception:
@@ -1171,12 +1172,12 @@ async def _handle_count(message: discord.Message, cs: dict):
         try:
             await message.add_reaction("🔥")
         except Exception:
-            pass
+            await message.channel.send(f"🔥 **{c}!** Keep going!")
     else:
         try:
             await message.add_reaction("🪶")
         except Exception:
-            pass
+            pass  # silent for normal counts — no spam
 
 
 async def _count_ruin(message: discord.Message, cs: dict, reason: str):
