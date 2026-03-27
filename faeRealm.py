@@ -31,6 +31,8 @@ import re
 import aiohttp
 import asyncio
 import datetime
+import os
+import json
 from collections import defaultdict
 
 # ── Bot setup ──────────────────────────────────────────────────────────────────
@@ -54,7 +56,14 @@ count_board: dict[int, dict[int, dict]] = defaultdict(
     lambda: defaultdict(lambda: {"counts": 0, "ruins": 0})
 )
 
-COUNT_MILESTONES = {10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000}
+feathers_log: dict[int, list[str]] = defaultdict(list)  # guild_id -> recent log lines
+MAX_LOG = 20
+
+
+def log_feathers(guild_id: int, msg: str):
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S")
+    feathers_log[guild_id].append(f"`{timestamp}` {msg}")
+    feathers_log[guild_id] = feathers_log[guild_id][-MAX_LOG:]
 COUNT_MILESTONE_MSGS = {
     10:    "🪶 *A gentle wind stirs… ten feathers have fallen.*",
     25:    "✨ *The seraphim take notice — twenty-five feathers gathered.*",
@@ -71,6 +80,7 @@ COUNT_MILESTONE_MSGS = {
 
 def add_win(guild_id: int, user_id: int, amount: int = 1):
     scores[guild_id][user_id] += amount
+    _save_scores()
 
 
 # ── Angel flavor text ──────────────────────────────────────────────────────────
@@ -159,6 +169,7 @@ def complete_edict(guild_id: int, user_id: int, cmd: str):
         user_data["streak"] = 1
     user_data["last_date"] = today
     user_data["completed_today"] = True
+    _save_streaks()
     return True
 
 
@@ -913,10 +924,183 @@ async def sanctum(ctx):
 
 
 # ── 🪶 Feather Counter events & logic ─────────────────────────────────────────
+SAVE_FILES = {
+    "count_state":  "count_state.json",
+    "scores":       "scores.json",
+    "streaks":      "streaks.json",
+    "count_board":  "count_board.json",
+}
+
+
+def save_all():
+    """Save all persistent data to disk."""
+    _save_count_state()
+    _save_scores()
+    _save_streaks()
+    _save_count_board()
+
+
+def _save_count_state():
+    try:
+        data = {
+            str(gid): {
+                "channel_id":   cs["channel_id"],
+                "count":        cs["count"],
+                "last_user_id": cs["last_user_id"],
+                "high_score":   cs["high_score"],
+                "shame_role":   cs.get("shame_role"),
+            }
+            for gid, cs in count_state.items()
+        }
+        with open(SAVE_FILES["count_state"], "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"[save_count_state] {e}")
+
+def save_count_state(): _save_count_state()  # alias used inline
+
+
+def _save_scores():
+    try:
+        data = {str(gid): {str(uid): w for uid, w in users.items()}
+                for gid, users in scores.items()}
+        with open(SAVE_FILES["scores"], "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"[save_scores] {e}")
+
+
+def _save_streaks():
+    try:
+        data = {
+            str(gid): {
+                str(uid): s
+                for uid, s in users.items()
+            }
+            for gid, users in streaks.items()
+        }
+        with open(SAVE_FILES["streaks"], "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"[save_streaks] {e}")
+
+
+def _save_count_board():
+    try:
+        data = {
+            str(gid): {str(uid): d for uid, d in users.items()}
+            for gid, users in count_board.items()
+        }
+        with open(SAVE_FILES["count_board"], "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"[save_count_board] {e}")
+
+
+def load_all():
+    """Load all persistent data from disk on startup."""
+    _load_count_state()
+    _load_scores()
+    _load_streaks()
+    _load_count_board()
+
+
+def _load_count_state():
+    path = SAVE_FILES["count_state"]
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        for gid_str, cs in data.items():
+            count_state[int(gid_str)] = {
+                "channel_id":   cs["channel_id"],
+                "count":        cs["count"],
+                "last_user_id": cs["last_user_id"],
+                "high_score":   cs["high_score"],
+                "shame_role":   cs.get("shame_role"),
+            }
+        print(f"[load] count_state: {len(count_state)} guild(s)")
+    except Exception as e:
+        print(f"[load_count_state] {e}")
+
+
+def _load_scores():
+    path = SAVE_FILES["scores"]
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        for gid_str, users in data.items():
+            for uid_str, wins in users.items():
+                scores[int(gid_str)][int(uid_str)] = wins
+        print(f"[load] scores: {sum(len(v) for v in scores.values())} entries")
+    except Exception as e:
+        print(f"[load_scores] {e}")
+
+
+def _load_streaks():
+    path = SAVE_FILES["streaks"]
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        for gid_str, users in data.items():
+            for uid_str, s in users.items():
+                streaks[int(gid_str)][int(uid_str)] = s
+        print(f"[load] streaks: {sum(len(v) for v in streaks.values())} entries")
+    except Exception as e:
+        print(f"[load_streaks] {e}")
+
+
+def _load_count_board():
+    path = SAVE_FILES["count_board"]
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        for gid_str, users in data.items():
+            for uid_str, d in users.items():
+                count_board[int(gid_str)][int(uid_str)] = d
+        print(f"[load] count_board: {sum(len(v) for v in count_board.values())} entries")
+    except Exception as e:
+        print(f"[load_count_board] {e}")
+
+
 @bot.event
 async def on_ready():
+    load_all()
     print(f"🪶 The Angelic is online! Logged in as {bot.user} (ID: {bot.user.id})")
     await bot.change_presence(activity=discord.Game("!sanctum • The Angelic"))
+    autosave.start()
+
+
+@bot.event
+async def on_error(event: str, *args, **kwargs):
+    import traceback
+    print(f"[on_error] unhandled error in {event}:")
+    traceback.print_exc()
+
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ You don't have permission to use this command.")
+    elif isinstance(error, commands.CommandNotFound):
+        pass  # ignore unknown commands silently
+    else:
+        import traceback
+        print(f"[on_command_error] {ctx.command}: {error}")
+        traceback.print_exc()
+
+
+@tasks.loop(minutes=10)
+async def autosave():
+    """Save all data every 10 minutes automatically."""
+    save_all()
 
 
 @bot.event
@@ -927,13 +1111,25 @@ async def on_message(message: discord.Message):
     if message.guild:
         cs = count_state.get(message.guild.id)
         if cs and message.channel.id == cs["channel_id"] and not message.content.startswith("!"):
-            await _handle_count(message, cs)
+            try:
+                await _handle_count(message, cs)
+            except Exception as e:
+                print(f"[on_message] counting error in guild {message.guild.id}: {e}")
+                log_feathers(message.guild.id, f"❌ Unhandled error: `{e}`")
+                try:
+                    await message.add_reaction("⚠️")
+                except Exception:
+                    pass
             return
     await bot.process_commands(message)
 
 
 async def _handle_count(message: discord.Message, cs: dict):
     content = message.content.strip()
+
+    # Normalize unicode digits (e.g. １２３ → 123)
+    content = content.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+
     if not content.isdigit():
         await message.add_reaction("❌")
         await _count_ruin(message, cs, "non-number")
@@ -952,7 +1148,11 @@ async def _handle_count(message: discord.Message, cs: dict):
     if cs["count"] > cs["high_score"]:
         cs["high_score"] = cs["count"]
     count_board[message.guild.id][message.author.id]["counts"] += 1
+    log_feathers(message.guild.id, f"✅ {message.author.display_name} counted → **{cs['count']}**")
     c = cs["count"]
+    if c % 10 == 0:
+        save_count_state()
+        _save_count_board()
     if c in COUNT_MILESTONES:
         await message.add_reaction("🎉")
         await message.channel.send(COUNT_MILESTONE_MSGS[c])
@@ -967,6 +1167,9 @@ async def _count_ruin(message: discord.Message, cs: dict, reason: str):
     cs["count"] = 0
     cs["last_user_id"] = None
     count_board[message.guild.id][message.author.id]["ruins"] += 1
+    log_feathers(message.guild.id, f"💀 {message.author.display_name} ruined at **{old}** ({reason})")
+    save_count_state()
+    _save_count_board()
     shame_role = None
     if cs.get("shame_role") and message.guild:
         shame_role = discord.utils.get(message.guild.roles, name=cs["shame_role"])
@@ -977,18 +1180,26 @@ async def _count_ruin(message: discord.Message, cs: dict, reason: str):
                         await m.remove_roles(shame_role)
                 await message.author.add_roles(shame_role)
             except discord.Forbidden:
-                pass
+                err = "missing Manage Roles permission"
+                print(f"[_count_ruin] {err} in guild {message.guild.id}")
+                log_feathers(message.guild.id, f"⚠️ Shame role error: `{err}`")
+            except Exception as e:
+                print(f"[_count_ruin] shame role error: {e}")
+                log_feathers(message.guild.id, f"⚠️ Shame role error: `{e}`")
     reason_text = {
         "non-number":   "spoke impure words in the sacred count",
         "wrong-number": "miscounted the fallen feathers",
         "double-count": "tried to count twice — greedy soul",
     }.get(reason, "disrupted the sacred count")
     role_str = shame_role.mention if shame_role else "**The Fallen**"
-    await message.channel.send(
-        f"💀 {message.author.mention} {reason_text}!\n"
-        f"*The count resets from **{old}** back to zero.*\n"
-        f"{role_str} has been bestowed upon this soul. 😈"
-    )
+    try:
+        await message.channel.send(
+            f"💀 {message.author.mention} {reason_text}!\n"
+            f"*The count resets from **{old}** back to zero.*\n"
+            f"{role_str} has been bestowed upon this soul. 😈"
+        )
+    except Exception as e:
+        print(f"[_count_ruin] failed to send ruin message: {e}")
 
 
 # ── 🪶 Feather Counter commands ────────────────────────────────────────────────
@@ -1006,6 +1217,7 @@ async def feathers_cmd(ctx):
         ("`!feathers leaderboard`",    "Top counters & worst offenders"),
         ("`!feathers milestones`",     "List all milestone numbers"),
         ("`!feathers status`",         "Show current count & high score"),
+        ("`!feathers report`",         "View recent activity log & error reports"),
         ("`!feathers reset`",          "Manually reset the count"),
         ("`!feathers remove`",         "Stop watching this channel"),
     ]:
@@ -1020,6 +1232,7 @@ async def feathers_setup(ctx):
         "channel_id": ctx.channel.id, "count": 0,
         "last_user_id": None, "high_score": 0, "shame_role": None,
     }
+    save_count_state()
     embed = discord.Embed(
         title="🪶 Feather Channel Set",
         description=(
@@ -1046,6 +1259,7 @@ async def feathers_shame(ctx, *, role_name: str):
         await ctx.send(f"❌ No role named **{role_name}** found. Create it in Server Settings → Roles first.")
         return
     cs["shame_role"] = role_name
+    save_count_state()
     await ctx.send(f"😈 Shame role set to {role.mention}. Those who falter will bear this mark.")
 
 
@@ -1102,6 +1316,38 @@ async def feathers_milestones(ctx):
     ))
 
 
+@feathers_cmd.command(name="report")
+@commands.has_permissions(manage_channels=True)
+async def feathers_report(ctx):
+    cs = count_state.get(ctx.guild.id)
+    channel = ctx.guild.get_channel(cs["channel_id"]) if cs else None
+    log = feathers_log.get(ctx.guild.id, [])
+
+    embed = discord.Embed(title="🪶 Feather Counter Report", color=0xF0C040)
+
+    if cs:
+        embed.add_field(
+            name="Current state",
+            value=(
+                f"Channel: {channel.mention if channel else '`unknown`'}\n"
+                f"Count: **{cs['count']}** • High score: **{cs['high_score']}**\n"
+                f"Last user ID: `{cs['last_user_id']}`\n"
+                f"Shame role: `{cs.get('shame_role') or 'none'}`"
+            ),
+            inline=False,
+        )
+    else:
+        embed.add_field(name="Current state", value="❌ No feather channel set up.", inline=False)
+
+    embed.add_field(
+        name=f"Recent activity (last {len(log)} events)",
+        value="\n".join(log[-10:]) if log else "*No activity recorded yet.*",
+        inline=False,
+    )
+    embed.set_footer(text="Errors appear here if counting silently breaks.")
+    await ctx.send(embed=embed)
+
+
 @feathers_cmd.command(name="reset")
 @commands.has_permissions(manage_channels=True)
 async def feathers_reset(ctx):
@@ -1112,6 +1358,7 @@ async def feathers_reset(ctx):
     old = cs["count"]
     cs["count"] = 0
     cs["last_user_id"] = None
+    save_count_state()
     await ctx.send(f"🔄 *The heavens reset the count from **{old}** to zero. Begin again from **1**.*")
 
 
@@ -1122,6 +1369,7 @@ async def feathers_remove(ctx):
         await ctx.send("❌ No feather channel is set up on this server.")
         return
     del count_state[ctx.guild.id]
+    save_count_state()
     await ctx.send("🪶 *The angels withdraw. This channel is no longer sacred counting grounds.*")
 
 
