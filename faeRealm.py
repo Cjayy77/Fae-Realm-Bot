@@ -1212,14 +1212,15 @@ async def feathers_cmd(ctx):
         color=0xF0C040,
     )
     for name, val in [
-        ("`!feathers setup`",          "Make this channel the counting channel"),
-        ("`!feathers shame <role>`",   "Set the shame role for those who falter"),
-        ("`!feathers leaderboard`",    "Top counters & worst offenders"),
-        ("`!feathers milestones`",     "List all milestone numbers"),
-        ("`!feathers status`",         "Show current count & high score"),
-        ("`!feathers report`",         "View recent activity log & error reports"),
-        ("`!feathers reset`",          "Manually reset the count"),
-        ("`!feathers remove`",         "Stop watching this channel"),
+        ("`!feathers setup`",            "Make this channel the counting channel"),
+        ("`!feathers shame <role>`",     "Set the shame role for those who falter"),
+        ("`!feathers leaderboard`",      "Top counters & worst offenders"),
+        ("`!feathers milestones`",       "List all milestone numbers"),
+        ("`!feathers status`",           "Show current count & high score"),
+        ("`!feathers report`",           "View recent activity log & error reports"),
+        ("`!feathers blame`",            "Run a diagnostic crash report 😈"),
+        ("`!feathers reset`",            "Manually reset the count"),
+        ("`!feathers remove`",           "Stop watching this channel"),
     ]:
         embed.add_field(name=name, value=val, inline=False)
     await ctx.send(embed=embed)
@@ -1314,6 +1315,63 @@ async def feathers_milestones(ctx):
         description="\n".join(lines),
         color=0xF0C040,
     ))
+
+
+@feathers_cmd.command(name="blame")
+@commands.has_permissions(manage_channels=True)
+async def feathers_blame(ctx):
+    display = "CodeHacker360"
+
+    # Try to find and tag them if they're in the server
+    target = discord.utils.find(
+        lambda m: m.name.lower() == "codehacker360" or m.display_name.lower() == "codehacker360",
+        ctx.guild.members
+    )
+    mention = target.mention if target else f"**{display}**"
+
+    fake_errors = [
+        f"gateway timeout during role assignment for `{display}`",
+        f"rate limit exceeded after rapid inputs from `{display}`",
+        f"message cache corruption triggered by `{display}`'s message",
+        f"illegal unicode sequence detected in message by `{display}`",
+        f"counting state lock deadlock caused by `{display}`",
+    ]
+
+    embed = discord.Embed(
+        title="🚨 Feather Counter Crash Report",
+        description="*A critical anomaly has been detected in the sacred count.*",
+        color=0xED4245,
+    )
+    embed.add_field(
+        name="❌ Fatal error",
+        value=f"`CountingStateException: {random.choice(fake_errors)}`",
+        inline=False,
+    )
+    embed.add_field(
+        name="Responsible party",
+        value=f"{mention} — flagged as the origin of the disruption",
+        inline=False,
+    )
+    embed.add_field(
+        name="Impact",
+        value="Counting halted • State corrupted • Manual reset required",
+        inline=False,
+    )
+    embed.add_field(
+        name="Trace",
+        value=(
+            "```\n"
+            f"File: feather_counter.py, line 247, in _handle_count\n"
+            f"    await verify_sequence(message, cs)\n"
+            f"File: feather_counter.py, line 189, in verify_sequence\n"
+            f"    raise CountingStateException(user_id={target.id if target else '??????'})\n"
+            f"CountingStateException: sequence broken by {display}\n"
+            "```"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="The Angelic Bot • Crash Report • This report has been logged.")
+    await ctx.send(embed=embed)
 
 
 @feathers_cmd.command(name="report")
