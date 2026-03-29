@@ -64,6 +64,9 @@ def log_feathers(guild_id: int, msg: str):
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S")
     feathers_log[guild_id].append(f"`{timestamp}` {msg}")
     feathers_log[guild_id] = feathers_log[guild_id][-MAX_LOG:]
+
+
+COUNT_MILESTONES = {10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000}
 COUNT_MILESTONE_MSGS = {
     10:    "🪶 *A gentle wind stirs… ten feathers have fallen.*",
     25:    "✨ *The seraphim take notice — twenty-five feathers gathered.*",
@@ -396,6 +399,8 @@ async def halo(ctx):
                 await ctx.send("⏰ *You hesitated… the halo falls. Angel scores!*")
                 bot_score += 1
                 rally = 0
+                if bot_score >= 3:
+                    break
                 continue
 
             player_val = int(msg.content)
@@ -513,7 +518,7 @@ async def sigil(ctx):
     try:
         while True:
             try:
-                msg = await bot.wait_for("message", timeout=30.0, check=check)
+                msg = await bot.wait_for("message", timeout=60.0, check=check)
             except asyncio.TimeoutError:
                 await ctx.send("⏰ *You hesitated too long… the fallen claim victory by default.*")
                 break
@@ -1111,11 +1116,15 @@ async def on_message(message: discord.Message):
     if message.guild:
         cs = count_state.get(message.guild.id)
         if cs and message.channel.id == cs["channel_id"]:
-            if not message.content.startswith("!"):
+            # Don't intercept if a game is active in this channel
+            game_active = (
+                message.channel.id in active_ttt or
+                message.channel.id in active_pong or
+                message.channel.id in active_wordsearch
+            )
+            if not message.content.startswith("!") and not game_active:
                 await _handle_count(message, cs)
-            else:
-                await bot.process_commands(message)
-            return
+                return
     await bot.process_commands(message)
 
 
@@ -1451,7 +1460,6 @@ async def feathers_remove(ctx):
 
 # ── Run ────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    import os
     token = os.environ.get("DISCORD_TOKEN")
     if not token:
         raise ValueError("Set the DISCORD_TOKEN environment variable.")
